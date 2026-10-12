@@ -83,8 +83,12 @@ curl -X POST -H "X-Auth: <token>" http://127.0.0.1:8767/inject \
   -H "Content-Type: application/json" \
   -d '{"text":"Hello World"}'
 
-# 通过广播（快速盲发，无回执）
-adb shell am broadcast -a com.aixtin.invisime.INJECT_TEXT --es text "你好"
+# 通过广播（快速盲发，无回执，需携带 auth 令牌）
+# 注意：需显式指定组件，部分系统（如 ColorOS）对隐式广播投递 manifest receiver 有限制
+adb shell am broadcast -n com.aixtin.invisime/.InjectReceiver -a com.aixtin.invisime.INJECT_TEXT \
+  --es text "你好" --es auth "<token>"
+# 令牌获取：adb shell run-as com.aixtin.invisime cat shared_prefs/invisime_prefs.xml（debug 签名）
+#           或 adb shell su -c 'cat /data/data/com.aixtin.invisime/shared_prefs/invisime_prefs.xml'（root）
 ```
 
 ### 3. 查询状态
@@ -166,6 +170,7 @@ IDLE → IME_SHOWN（onWindowShown）
 - **沙箱隔离**：调用方只能通过注入器写文本，无法越权
 - **本地绑定**：HTTP 服务只监听 127.0.0.1，局域网/公网无法直连
 - **令牌鉴权**：所有 HTTP 请求必须携带 `X-Auth` 头；令牌在**首次装机**时自动随机生成并持久化（每台设备唯一，卸载重装重新生成），同设备上未授权的应用会被拒绝（403）；请勿将端口暴露到网络
+- **广播同锁**：`INJECT_TEXT` 广播同样校验 auth 令牌，无令牌/错误令牌直接丢弃，未授权应用无法通过广播注入
 
 ## 架构
 
@@ -193,6 +198,8 @@ IDLE → IME_SHOWN（onWindowShown）
 
 ## 版本
 
+- **v1.0.3** — 广播鉴权
+  - `INJECT_TEXT` 广播入口增加 auth 令牌校验（与 HTTP `X-Auth` 同一把锁），无令牌/错误令牌直接丢弃，封堵任意应用可盲发广播的口子
 - **v1.0.2** — 随机令牌
   - 移除硬编码 `SECRET_TOKEN`：首次装机自动生成随机令牌并持久化（每台设备默认唯一），卸载重装重新生成
   - 移除 `UidFilteringServerSocket`：SELinux 下 app 读 /proc/net/tcp 被拒导致 UID 过滤失效，且 accept 覆盖会挂起连接（实测 HTTP 无响应）

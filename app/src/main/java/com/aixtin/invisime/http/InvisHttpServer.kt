@@ -6,6 +6,11 @@ import android.view.inputmethod.InputConnection
 import com.aixtin.invisime.state.ImeState
 import fi.iki.elonen.NanoHTTPD
 import org.json.JSONObject
+import java.io.File
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.ServerSocket
+import java.net.Socket
 
 /**
  * 注入器 HTTP 服务端
@@ -20,17 +25,27 @@ class InvisHttpServer(
     private val stateProvider: () -> ImeState,
     private val connectionProvider: () -> InputConnection?,
     private val editorInfoProvider: () -> android.view.inputmethod.EditorInfo?
-) : NanoHTTPD(port) {
+) : NanoHTTPD("127.0.0.1", port) {
 
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    // 访问令牌：客户端（远程调试端）请求时必须携带 X-Auth 头。
+    // 同设备普通 App 无法获知该令牌，即使能连上 127.0.0.1:8767 也会被拒。
+    private val SECRET_TOKEN = "e66361ccd4e00941dcf3b95ae3578210"
     private var seqCounter = 0L
 
     init {
+        setServerSocketFactory(ServerSocketFactory { UidFilteringServerSocket() })
         start(SOCKET_READ_TIMEOUT, false)
         android.util.Log.i(TAG, "InvisHttpServer started on port $port")
     }
 
     override fun serve(session: IHTTPSession): Response {
+        val auth = session.headers["x-auth"] ?: ""
+        if (auth != SECRET_TOKEN) {
+            return jsonResponse(Response.Status.FORBIDDEN, errorJson("FORBIDDEN", "未授权: 缺少或错误的 X-Auth 令牌"))
+        }
+
         val uri = session.uri
         val method = session.method
 
@@ -54,7 +69,7 @@ class InvisHttpServer(
             put("name", "InvisibleIME")
             put("protocol_version", "1.0")
             put("capabilities", listOf("type", "backspace", "enter", "get_text", "select", "composition"))
-            put("auth", "none")
+            put("auth", "token")
             put("status", stateProvider().name)
         }
         return jsonResponse(Response.Status.OK, json.toString())
@@ -68,10 +83,17 @@ class InvisHttpServer(
      * 中文会变 mojibake（1 字节 = 1 字符）。此处做自动还原。
      */
     private fun readBody(session: IHTTPSession): String? {
-        val body = HashMap<String, String>()
         return try {
-            session.parseBody(body)
-            body["postData"]?.let { fixMojibake(it) }
+            val len = session.headers["content-length"]?.toIntOrNull() ?: return null
+            val bytes = ByteArray(len)
+            var off = 0
+            while (off < len) {
+                val n = session.inputStream.read(bytes, off, len - off)
+                if (n < 0) break
+                off += n
+            }
+            val raw = String(bytes, 0, off, Charsets.UTF_8)
+            fixMojibake(raw)
         } catch (e: Exception) {
             null
         }
@@ -311,6 +333,61 @@ class InvisHttpServer(
     fun shutdown() {
         stop()
         android.util.Log.i(TAG, "InvisHttpServer stopped")
+    }
+
+    // ─── 访问控制：仅回环 + 连接方 UID 白名单 ─────────────────
+    /**
+     * 通过 ServerSocketFactory 注入自定义 socket：
+     * 绑定 127.0.0.1，并在 accept 时校验连接方 UID。
+     * 只接受 root(0) / system(1000) / shell(2000) 发起的连接
+     * （adb forward、系统调试链路），其余同设备应用一律拒绝。
+     */
+
+    private class UidFilteringServerSocket : ServerSocket() {
+
+        override fun accept(): Socket {
+            while (true) {
+                val socket = super.accept()
+                val uid = socket.peerUid()
+                if (uid == null || uid in ALLOWED_UIDS) {
+                    return socket
+                }
+                android.util.Log.w(TAG, "Rejected connection uid=$uid addr=${socket.inetAddress?.hostAddress}")
+                socket.close()
+            }
+        }
+
+        private fun Socket.peerUid(): Int? {
+            val remote = remoteSocketAddress as? InetSocketAddress ?: return null
+            val addr = remote.address?.hostAddress ?: return null
+            // 仅回环连接存在同机 UID 映射；非回环一律视为不可信（含 IPv4-mapped 形式）
+            if (addr != "127.0.0.1" && addr != "::1" && addr != "::ffff:127.0.0.1") return null
+            val rPort = remote.port.toString(16).padStart(4, '0').uppercase()
+            val lPort = localPort.toString(16).padStart(4, '0').uppercase()
+            val loopIp = arrayOf(
+                "0100007F",
+                "0000000000000000FFFF00000100007F",
+                "00000000000000000000000001000000"
+            )
+            for (f in listOf("/proc/net/tcp", "/proc/net/tcp6")) {
+                val lines = try { File(f).readLines() } catch (e: Exception) { continue }
+                for (line in lines.drop(1)) {
+                    val parts = line.trim().split(Regex("\\s+"))
+                    if (parts.size > 7 && parts[1].endsWith(":$lPort") && parts[2].endsWith(":$rPort")) {
+                        val remoteIp = parts[2].substringBefore(':')
+                        if (remoteIp in loopIp) {
+                            return parts[7].toIntOrNull()
+                        }
+                    }
+                }
+            }
+            return null
+        }
+
+        companion object {
+            val ALLOWED_UIDS = setOf(0, 1000, 2000)
+            private const val TAG = "InvisHttpServer.UidFilter"
+        }
     }
 
     companion object {

@@ -47,9 +47,12 @@ adb shell ime set com.aixtin.invisime/.InvisImeService
 ### 1. 握手（发现协议）
 
 ```bash
-adb forward tcp:8767 localabstract:httpd
-curl http://127.0.0.1:8767
+# 服务只监听 127.0.0.1，须通过 adb forward 访问
+adb forward tcp:8767 tcp:8767
+curl -H "X-Auth: <token>" http://127.0.0.1:8767
 ```
+
+> 令牌（token）为源码 `InvisHttpServer.kt` 中 `SECRET_TOKEN` 常量，部署时建议替换为自己的随机串。
 
 响应：
 ```json
@@ -57,7 +60,7 @@ curl http://127.0.0.1:8767
   "name": "InvisibleIME",
   "protocol_version": "1.0",
   "capabilities": ["type", "backspace", "enter", "get_text", "select", "composition"],
-  "auth": "none",
+  "auth": "token",
   "status": "INPUT_READY"
 }
 ```
@@ -66,12 +69,12 @@ curl http://127.0.0.1:8767
 
 ```bash
 # 通过统一指令入口
-curl -X POST http://127.0.0.1:8767 \
+curl -X POST -H "X-Auth: <token>" http://127.0.0.1:8767 \
   -H "Content-Type: application/json" \
   -d '{"cmd":"type","text":"你好"}'
 
 # 或通过 /inject 快捷入口
-curl -X POST http://127.0.0.1:8767/inject \
+curl -X POST -H "X-Auth: <token>" http://127.0.0.1:8767/inject \
   -H "Content-Type: application/json" \
   -d '{"text":"Hello World"}'
 
@@ -82,7 +85,7 @@ adb shell am broadcast -a com.aixtin.invisime.INJECT_TEXT --es text "你好"
 ### 3. 查询状态
 
 ```bash
-curl http://127.0.0.1:8767/state
+curl -H "X-Auth: <token>" http://127.0.0.1:8767/state
 ```
 
 响应：
@@ -100,19 +103,19 @@ curl http://127.0.0.1:8767/state
 
 ```bash
 # 退格
-curl -X POST http://127.0.0.1:8767 -d '{"cmd":"backspace"}'
+curl -X POST -H "X-Auth: <token>" http://127.0.0.1:8767 -d '{"cmd":"backspace"}'
 
 # 换行（不发送）
-curl -X POST http://127.0.0.1:8767 -d '{"cmd":"enter"}'
+curl -X POST -H "X-Auth: <token>" http://127.0.0.1:8767 -d '{"cmd":"enter"}'
 
 # 读取当前输入框内容
-curl -X POST http://127.0.0.1:8767 -d '{"cmd":"get_text","before":100}'
+curl -X POST -H "X-Auth: <token>" http://127.0.0.1:8767 -d '{"cmd":"get_text","before":100}'
 
 # 设置选区
-curl -X POST http://127.0.0.1:8767 -d '{"cmd":"select","start":0,"end":5}'
+curl -X POST -H "X-Auth: <token>" http://127.0.0.1:8767 -d '{"cmd":"select","start":0,"end":5}'
 
 # 设置组合文本（拼音输入中间状态）
-curl -X POST http://127.0.0.1:8767 -d '{"cmd":"composition","text":"ni"}'
+curl -X POST -H "X-Auth: <token>" http://127.0.0.1:8767 -d '{"cmd":"composition","text":"ni"}'
 ```
 
 ## 协议规范
@@ -144,6 +147,7 @@ IDLE → IME_SHOWN（onWindowShown）
 |--------|------|
 | INPUT_LOST | 输入焦点已丢失 |
 | INPUT_FAILED | commitText 返回 false |
+| FORBIDDEN | 缺少或错误的 X-Auth 令牌 |
 | BAD_REQUEST | 请求参数错误 |
 | UNKNOWN_CMD | 未知指令 |
 | NOT_FOUND | 未知端点 |
@@ -155,7 +159,8 @@ IDLE → IME_SHOWN（onWindowShown）
 - **enter = 换行**：不替应用决定"回车是否发送"
 - **内容不改写**：注入器绝不改写文本内容
 - **沙箱隔离**：调用方只能通过注入器写文本，无法越权
-- **HTTP 无鉴权提醒**：8767 端口默认不鉴权，同一设备上任意应用都可注入文本；请勿将端口暴露到网络，生产使用前先加鉴权 token 与 TLS
+- **本地绑定**：HTTP 服务只监听 127.0.0.1，局域网/公网无法直连
+- **令牌鉴权**：所有 HTTP 请求必须携带 `X-Auth` 头（源码 `SECRET_TOKEN` 常量），同设备上未授权的应用会被拒绝（403）；请勿将端口暴露到网络，生产使用前请修改默认令牌
 
 ## 架构
 
@@ -183,6 +188,10 @@ IDLE → IME_SHOWN（onWindowShown）
 
 ## 版本
 
+- **v1.0.1** — 安全加固
+  - 服务绑定 127.0.0.1，阻断局域网直连
+  - 全部 HTTP 端点增加 X-Auth 令牌鉴权（未授权返回 403）
+  - 修复 POST 请求体读取问题
 - **v1.0.0** — M1 + M2 + M3 完成
   - InputMethodService + 隐形 View
   - HTTP 端点（8767）+ 全部指令

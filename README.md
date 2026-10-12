@@ -52,7 +52,12 @@ adb forward tcp:8767 tcp:8767
 curl -H "X-Auth: <token>" http://127.0.0.1:8767
 ```
 
-> 令牌（token）为源码 `InvisHttpServer.kt` 中 `SECRET_TOKEN` 常量，部署时建议替换为自己的随机串。
+> 令牌（token）在**首次装机**时自动随机生成并持久化，**每台设备默认唯一**；卸载重装会重新生成。
+> 查看本机令牌（debug 签名版）：
+> ```bash
+> adb shell run-as com.aixtin.invisime cat shared_prefs/invisime_prefs.xml
+> # 或 root 设备：adb shell su -c "cat /data/data/com.aixtin.invisime/shared_prefs/invisime_prefs.xml"
+> ```
 
 响应：
 ```json
@@ -160,7 +165,7 @@ IDLE → IME_SHOWN（onWindowShown）
 - **内容不改写**：注入器绝不改写文本内容
 - **沙箱隔离**：调用方只能通过注入器写文本，无法越权
 - **本地绑定**：HTTP 服务只监听 127.0.0.1，局域网/公网无法直连
-- **令牌鉴权**：所有 HTTP 请求必须携带 `X-Auth` 头（源码 `SECRET_TOKEN` 常量），同设备上未授权的应用会被拒绝（403）；请勿将端口暴露到网络，生产使用前请修改默认令牌
+- **令牌鉴权**：所有 HTTP 请求必须携带 `X-Auth` 头；令牌在**首次装机**时自动随机生成并持久化（每台设备唯一，卸载重装重新生成），同设备上未授权的应用会被拒绝（403）；请勿将端口暴露到网络
 
 ## 架构
 
@@ -188,6 +193,9 @@ IDLE → IME_SHOWN（onWindowShown）
 
 ## 版本
 
+- **v1.0.2** — 随机令牌
+  - 移除硬编码 `SECRET_TOKEN`：首次装机自动生成随机令牌并持久化（每台设备默认唯一），卸载重装重新生成
+  - 移除 `UidFilteringServerSocket`：SELinux 下 app 读 /proc/net/tcp 被拒导致 UID 过滤失效，且 accept 覆盖会挂起连接（实测 HTTP 无响应）
 - **v1.0.1** — 安全加固
   - 服务绑定 127.0.0.1，阻断局域网直连
   - 全部 HTTP 端点增加 X-Auth 令牌鉴权（未授权返回 403）

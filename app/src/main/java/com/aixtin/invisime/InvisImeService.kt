@@ -6,6 +6,7 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import com.aixtin.invisime.http.InvisHttpServer
 import com.aixtin.invisime.state.ImeState
+import java.util.UUID
 
 /**
  * InvisibleIME —— AI 专属隐形注入器
@@ -74,11 +75,21 @@ class InvisImeService : InputMethodService() {
         instance = this
         Log.i(TAG, "InvisibleIME created")
 
+        // 首次装机自动生成随机访问令牌并持久化：每台设备拥有唯一默认令牌，
+        // 之后每次启动读取同一令牌；卸载重装会重新生成
+        val prefs = getSharedPreferences("invisime_prefs", MODE_PRIVATE)
+        var authToken = prefs.getString("auth_token", null)
+        if (authToken.isNullOrEmpty()) {
+            authToken = UUID.randomUUID().toString().replace("-", "")
+            prefs.edit().putString("auth_token", authToken).apply()
+        }
+
         // 启动 HTTP 服务端
         // connectionProvider 直接用系统实时提供的 currentInputConnection，
         // 不缓存 → 永远是活的连接，杜绝"连接失效"问题
         httpServer = InvisHttpServer(
             port = HTTP_PORT,
+            authToken = authToken,
             stateProvider = { currentState },
             connectionProvider = { currentInputConnection },
             editorInfoProvider = { currentEditorInfo }
